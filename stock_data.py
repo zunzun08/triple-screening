@@ -7,13 +7,19 @@ import pandas as pd
 #Delta: Input a interval time. Values can range from:
 #['1m','2m','5m','15m','30m','60m','90m','1h','1d','5d','1wk','1mo','3mo']
 
-def get_mag7_price(start_date: str, delta: str):
+def get_mag7_prices(start_date: str, delta: str = '1d') -> pd.DataFrame:
     while delta in ['1m','2m','5m','15m','30m','60m','90m','1h','1d','5d','1wk','1mo','3mo']:
         try:
             present = pd.Timestamp.now().strftime('%Y-%m-%d')
             mag_7 = ["GOOGL", "AMZN", "AAPL", "META", "MSFT", "NVDA", "TSLA"]
             mag_history = yf.Tickers(mag_7).history(start=start_date, end=present)
-            return mag_history.stack(level=1).rename_axis(['Date', 'Ticker']).reset_index(level=1)
+            mag_history = mag_history.stack(level=1).rename_axis(['Date', 'Ticker']).reset_index(level=1)
+            
+            #ADDING volatility to my stock prices and 
+            mag_history['Daily Volatility'] = mag_history.groupby('Ticker').agg(
+            volatility=('Close', 'pct_change'))
+            
+            return mag_history
         except ValueError:
             print(f'Please type in a valid period: {delta}')
 
@@ -94,3 +100,42 @@ def get_metrics(comp_ticker: str, type='all'):
         whole = financial_highlights | trading_highlights
         return creating_df(whole, comp_ticker)
  
+
+
+
+
+    
+    
+
+#Volatility
+
+#One week volatility = 
+#One month volaitility
+
+
+#get_volatility(delta, ticker)
+
+
+# Seperate
+#Average volume one month and week =
+# get_volume(delta, ticker)
+def get_monthly_avg_volume(comp_ticker: str, offset: int) -> pd.DataFrame:
+    #Getting volume data
+    present = pd.Timestamp.now()
+    start_date = present - pd.DateOffset(months=offset)
+    
+    volume = stock_price(comp_ticker=comp_ticker, start_date=start_date)['Volume'].reset_index()
+    
+    #Getting month and year to group by MoM
+    volume['Month'] = volume.Date.dt.month
+    volume['Year'] = volume.Date.dt.year
+    
+    #Aggregating and calculating mean for every month
+    average = volume.groupby(['Month', 'Year']).agg(
+        avg_volume = ('Volume', 'mean')
+    ).reset_index()
+    
+    return average
+
+
+#Average one volatility from past month?
