@@ -26,12 +26,6 @@ def get_mag7_prices(start_date: str, delta: str = '1d') -> pd.DataFrame:
 
 #A more general fucntion where you can get the stock data for any publicly traded company on yahoo finance
 
-
-def stock_price(delta: str, comp_ticker: str, start_date: str):
-    present = pd.Timestamp.now().strftime('%Y-%m-%d')
-    return yf.Ticker(comp_ticker).history(start=start_date,end=present, interval=delta).sort_index(ascending=False)
-
-
 #Creating a function where we get the statistics for a particular stock
 def creating_df(dictionary, comp_ticker):
     variables = set()
@@ -119,23 +113,47 @@ def get_metrics(comp_ticker: str, type='all'):
 # Seperate
 #Average volume one month and week =
 # get_volume(delta, ticker)
-def get_monthly_avg_volume(comp_ticker: str, offset: int) -> pd.DataFrame:
-    #Getting volume data
-    present = pd.Timestamp.now()
-    start_date = present - pd.DateOffset(months=offset)
-    
-    volume = stock_price(comp_ticker=comp_ticker, start_date=start_date)['Volume'].reset_index()
-    
-    #Getting month and year to group by MoM
-    volume['Month'] = volume.Date.dt.month
-    volume['Year'] = volume.Date.dt.year
-    
-    #Aggregating and calculating mean for every month
-    average = volume.groupby(['Month', 'Year']).agg(
-        avg_volume = ('Volume', 'mean')
-    ).reset_index()
-    
-    return average
-
 
 #Average one volatility from past month?
+
+
+
+class Trading:
+    def __init__(self, comp_ticker):
+        self.ticker = comp_ticker
+        
+    
+    def stock_price(self, start_date: str,  delta: str  = '1d') -> pd.DataFrame:
+        present = pd.Timestamp.now().strftime('%Y-%m-%d')
+        return yf.Ticker(self.ticker).history(start=start_date,end=present, interval=delta).sort_index(ascending=False)
+    
+    
+    
+    
+    def monthly_avg_volume(self, offset: int) -> pd.DataFrame:
+        #Getting volume data
+        present = pd.Timestamp.now()
+        start_date = present - pd.DateOffset(months=offset)
+        
+        volume = self.stock_price(start_date=start_date)['Volume'].reset_index()
+        
+        #Getting month and year to group by MoM
+        volume['Month'] = volume.Date.dt.month
+        volume['Year'] = volume.Date.dt.year
+        
+        #Aggregating and calculating mean for every month
+        average = volume.groupby(['Month', 'Year']).agg(
+            avg_volume = ('Volume', 'mean')
+        ).reset_index()
+        
+        return average
+    
+    
+    
+    
+    def trading_metrics(self, type='trading') -> pd.DataFrame:
+        trading_highlights = {
+        'Stock Price History': ['beta', '52WeekChange', 'SandP52WeekChange', 'fiftyTwoWeekHigh', 'fiftyTwoWeekLow', 'fiftyDayAverage', 'twoHundredDayAverage'],
+        'Share Statistics': ['averageVolume', 'averageVolume10days', 'sharesOutstanding', 'impliedSharesOutstanding', 'floatShares', 'heldPercentInsiders', 'heldPercentInstitutions', 'sharesShort', 'shortRatio', 'shortPercentOfFloat', 'sharesPercentSharesOut', 'sharesShort'],
+        'Dividends & Splits': ['dividendRate', 'dividendYield', 'trailingAnnualDividendRate', 'trailingAnnualDividendYield', 'payoutRatio', 'lastDividendValue','exDividendDate', 'lastSplitFactor', 'lastSplitDate']}
+        return creating_df(trading_highlights, self.ticker)
