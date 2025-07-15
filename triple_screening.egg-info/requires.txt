@@ -1,0 +1,10 @@
+datasets>=3.1.0
+dotenv>=0.9.9
+huggingface-hub>=0.33.4
+matplotlib>=3.7.5
+numpy>=1.24.4
+pandas>=2.0.3
+requests>=2.32.4
+seaborn>=0.13.2
+sqlalchemy>=2.0.41
+transformers>=4.46.3

@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "triple-screening"
+version = "0.1.0"
+description = "End to End model development of a Language model for financial news sentiment. Includes pipeline building, data collection, and model research."
+authors = [
+    {name = "Cristian Compean", email = "czcompean@utexas.edu"}
+]
+requires-python = ">= 3.8"
+dependencies = [
+    "datasets>=3.1.0",
+    "dotenv>=0.9.9",
+    "huggingface-hub>=0.33.4",
+    "matplotlib>=3.7.5",
+    "numpy>=1.24.4",
+    "pandas>=2.0.3",
+    "requests>=2.32.4",
+    "seaborn>=0.13.2",
+    "sqlalchemy>=2.0.41",
+    "transformers>=4.46.3",
+]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
+exclude = ["node_modules*", ".venv*", "results*", "__pycache__*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.py", "*.txt", "*.json", "*.yaml", "*.yml"]
+[project.urls]
+Repository = "https://github.com/zunzun08/triple-screening"
