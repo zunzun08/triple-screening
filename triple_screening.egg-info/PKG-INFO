@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: triple-screening
+Version: 0.1.0
+Summary: End to End model development of a Language model for financial news sentiment. Includes pipeline building, data collection, and model research.
+Author-email: Cristian Compean <czcompean@utexas.edu>
+Project-URL: Repository, https://github.com/zunzun08/triple-screening
+Requires-Python: >=3.8
+Requires-Dist: datasets>=3.1.0
+Requires-Dist: dotenv>=0.9.9
+Requires-Dist: huggingface-hub>=0.33.4
+Requires-Dist: matplotlib>=3.7.5
+Requires-Dist: numpy>=1.24.4
+Requires-Dist: pandas>=2.0.3
+Requires-Dist: requests>=2.32.4
+Requires-Dist: seaborn>=0.13.2
+Requires-Dist: sqlalchemy>=2.0.41
+Requires-Dist: transformers>=4.46.3
