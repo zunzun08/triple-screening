@@ -20,7 +20,7 @@ class NetworkManager:
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
     }
 
-        self.proxies = {'http': ["108.161.135.118"]}
+        self.proxies = {'http': "108.161.135.118"}
 
     def create_session(self) -> requests.Session:
         if not self.proxies:
@@ -50,7 +50,7 @@ class NetworkManager:
             random_tls_extension_order=True
         )
         client.proxies.update(self.proxies)
-        client.headers.update(self.proxies)
+        client.headers.update(self.headers)
         return client
 
     
@@ -68,6 +68,7 @@ class NYTimesSpider(scrapy.Spider):
         self.config = NetworkManager()
         self.session: requests.Session = self.config.create_session()
         self.pages_to_parse = pages_to_parse
+        self.headers = self.config.headers.copy()
         
         self.current_session_metrics = {
             'start_time': datetime.now(),
@@ -102,8 +103,8 @@ class NYTimesSpider(scrapy.Spider):
 
     def _get_tokens(self) -> None:
             strategies = [
-                ('standard_session', lambda : self.session.get("https://nytimes.com")),
-                ('tls_session', lambda: self.session.get('https://nytimes.com'))]
+                ('standard_session', self._try_standard_session),
+                ('tls_session', self._try_tls_session)]
             
             for strategy_name, get_response in strategies:
                 try:
@@ -115,8 +116,8 @@ class NYTimesSpider(scrapy.Spider):
                         return self._extract_tokens(r)
                     else:
                         if getattr(self, 'session_needs_rotation', False):
-                            self._rotate_session()
-                        time.sleep(3)
+                            self.logger.info(f"{strategy_name} failed. Starting TLS session in 3 seconds...")
+                            time.sleep(3)
 
                 except requests.exceptions.RequestException as e:
                     self.logger.error(f"{strategy_name} failed: {e}")
@@ -125,6 +126,12 @@ class NYTimesSpider(scrapy.Spider):
             return None
 
 
+    def _try_standard_session(self):
+        return self.session.get('https://nytimes.com')
+    
+    def _try_tls_session(self):
+        tls_client = self.config.tls_client_session()
+        return tls_client.get('https://nytimes.com')
 
     def _extract_tokens(self, response):
             #variables needed
@@ -193,7 +200,7 @@ class NYTimesSpider(scrapy.Spider):
         if self._try_rotate_proxy():
             return True
         if self._check_soft_block(response):
-            self.logger.log("Status code 403 but content available - proceed with caution")
+            self.logger.info("Status code 403 but content available - proceed with caution")
             return True
 
         self._mark_for_session_rotation("403_block")
@@ -230,7 +237,7 @@ class NYTimesSpider(scrapy.Spider):
         for agent in alternate_agents:
             if agent != current_agent:
                 self.session.headers['User-Agent'] = agent
-                self.logger.log(f'Rotated to agent: {agent}')
+                self.logger.info(f'Rotated to agent: {agent}')
                 return True
         return False
 
@@ -243,11 +250,11 @@ class NYTimesSpider(scrapy.Spider):
             for proxy in self.proxies['http']:
                 if proxy != current_proxy:
                     self.session.proxies['http'] = proxy
-                    self.logger.log(f'Rotated to proxy: {proxy}')
+                    self.logger.info(f'Rotated to proxy: {proxy}')
                     return True
             return False
         else:
-            self.logger.log(f"No more proxies available")
+            self.logger.info(f"No more proxies available")
             return False
 
 
@@ -311,7 +318,7 @@ class NYTimesSpider(scrapy.Spider):
                 callback=self.parse 
                 )
         else:
-            self.logger.log("API Connection Error")
+            self.logger.info("API Connection Error")
 
 
     def _request_generator(self, cursor = None, operation_name: str = 'PersonalizedPackagesQuery') -> str:
@@ -367,7 +374,7 @@ class NYTimesSpider(scrapy.Spider):
         if start_cursor and current_page < self.pages_to_parse:
             self.logger.info("Cursor found for next page, starting new request.")
             next_endpoint = self._request_generator(cursor=start_cursor)
-            
+            time.sleep(2)
             yield scrapy.Request(
                 url=next_endpoint,
                 headers=self.session.headers,
