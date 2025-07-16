@@ -14,4 +14,5 @@ Requires-Dist: pandas>=2.0.3
 Requires-Dist: requests>=2.32.4
 Requires-Dist: seaborn>=0.13.2
 Requires-Dist: sqlalchemy>=2.0.41
+Requires-Dist: tls-client2>=1.1
 Requires-Dist: transformers>=4.46.3

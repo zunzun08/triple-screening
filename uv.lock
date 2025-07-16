@@ -3238,6 +3238,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tls-client2"
+version = "1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/25/4a8beb419cab38ab3f92b0a6581c2250b015809637aa0030dcb330125682/tls_client2-1.1.tar.gz", hash = "sha256:21939404ef2036c56217195e96b3399300c04fc8695ddc723e061e445e06d466", size = 36349883, upload-time = "2025-06-08T07:19:34.314Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f0/c1/6eabc945abd2e6e0229b37b3e1e7009b9f36dcb6fd4b8214ca7af35d2c78/tls_client2-1.1-py3-none-any.whl", hash = "sha256:93466335af3bd0b416d8aa884f7228df49afba1b1eb9c99432a6bf6f6a9b392e", size = 36538491, upload-time = "2025-06-08T07:18:30.108Z" },
+]
+
+[[package]]
 name = "tokenizers"
 version = "0.20.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3461,6 +3470,7 @@ dependencies = [
     { name = "requests" },
     { name = "seaborn" },
     { name = "sqlalchemy" },
+    { name = "tls-client2" },
     { name = "transformers", version = "4.46.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
     { name = "transformers", version = "4.53.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
 ]
@@ -3476,6 +3486,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.32.4" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "sqlalchemy", specifier = ">=2.0.41" },
+    { name = "tls-client2", specifier = ">=1.1" },
     { name = "transformers", specifier = ">=4.46.3" },
 ]
 

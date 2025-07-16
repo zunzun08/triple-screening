@@ -7,4 +7,5 @@ pandas>=2.0.3
 requests>=2.32.4
 seaborn>=0.13.2
 sqlalchemy>=2.0.41
+tls-client2>=1.1
 transformers>=4.46.3
