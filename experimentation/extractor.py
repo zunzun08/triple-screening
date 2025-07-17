@@ -8,7 +8,7 @@ import re
 import datetime
 import numpy as np
 import pandas as pd
-from collections import deque
+from collections import deque, defaultdict
 from datetime import datetime
 import tls_client
 import time
@@ -383,8 +383,7 @@ class NYTimesSpider(scrapy.Spider):
             )
         else:
             self.logger.info("API Connection Error")
-
-    def parser(self, response):
+    def parse(self, response):
         """Main parser method"""
         try:
             data = response.json()
@@ -420,7 +419,7 @@ class NYTimesSpider(scrapy.Spider):
                     time.sleep(2)
                     yield scrapy.Request(
                         url=next_endpoint,
-                        headers=self.headers,
+                        headers=self.session.headers,
                         callback=self.parse,
                         meta={"page": page_num + 1, "section_url": section_url},
                         dont_filter=True,
@@ -432,6 +431,7 @@ class NYTimesSpider(scrapy.Spider):
             self.logger.error(f"Failed to parse JSON response: {e}")
         except Exception as e:
             self.logger.error(f"Error in parse method: {e}")
+        return self.all_parsed_data
 
     def _extract_article_data(self, data):
         collection = data["data"]["legacyCollection"]["collectionsPage"]
@@ -501,7 +501,7 @@ def test_components():
 
     # Test token extraction
     print("Getting tokens...")
-    spider.header_update()
+    spider._header_update()
 
     # Test endpoint generation
     url = spider.start_urls[0]
@@ -515,22 +515,11 @@ def test_components():
     # Test direct API call (bypassing Scrapy)
     if connection_ok:
         response = spider.session.get(endpoint)
-        if response.status_code == 200:
-            # Create a mock response object for testing
-            class MockResponse:
-                def __init__(self, json_data):
-                    self._json = json_data
-                    self.meta = type("obj", (object,), {"page": 1})()
+        data = spider.parse(response)
 
-                def json(self):
-                    return self._json
-
-            mock_response = MockResponse(response.json())
-
-            # Test the parse method
-            print("Testing parse method...")
-            results = list(spider.parse(mock_response))
-            print(f"Parsed {len(results)} articles")
+        for item in data:
+            print(item)
+            # Test the parse metho
 
 
 if __name__ == "__main__":
