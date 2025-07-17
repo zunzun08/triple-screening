@@ -3,7 +3,7 @@ import requests
 import asyncio
 from scrapy.crawler import Crawler
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import re
 import datetime
 import numpy as np
@@ -299,16 +299,39 @@ class NYTimesSpider(scrapy.Spider):
         endpoint = self._request_generator()
         if self._check_api_connection(endpoint):
             yield scrapy.Request(
-                url=endpoint, headers=self.session.headers, callback=self.parse
+                url=endpoint, headers=self.session.headers, callback=self.parse, meta={"page":1}
             )
         else:
             self.logger.info("API Connection Error")
 
+
+    def _get_id_var(self, url: str):
+        """Extract the path from a URL to use as the ID variable."""
+        if not url:
+            raise ValueError("URL cannot be empty")
+        
+        try:
+            id_path = urlparse(url).path
+            if not id_path or id_path == '/':
+                raise ValueError("URL must contain a valid path")
+            return id_path
+        except Exception as e:
+            raise ValueError(f"Invalid URL format: {e}")
+
+
+
+    
     def _request_generator(
-        self, cursor=None, operation_name: str = "CollectionsQuery"
-    ) -> str:
+        self, url: str ,cursor=None, operation_name: str = "CollectionsQuery") -> str:
+        """Generate API endpoint URL for GraphQL requests."""
+        if url:
+            id_path = self._get_id_var(url)
+        else:
+            self.logger.info("Invalid URL!")
+            return None
+        
         variables = {
-            "id": "/section/business/media",
+            "id": id_path,
             "first": 10,
             "exclusionMode": "HIGHLIGHTS_AND_EMBEDDED",
             "isFetchMore": False,
@@ -319,18 +342,19 @@ class NYTimesSpider(scrapy.Spider):
             "hasHighlightsList": False,
             "cursor": cursor,
         }
-        extension = {
+        extensions = {
             "persistedQuery": {
                 "version": 1,
                 "sha256Hash": "8334262659d77fc2166184bf897e6d139e437af3a9b84d0c020d3dfcb0f177b8",
             }
         }
 
-        # formatting
-        var_query = quote(json.dumps(variables))
-        extension_query = quote(json.dumps(extension))
 
-        api_endpoint = f"https://samizdat-graphql.nytimes.com/graphql/v2?operation_name={operation_name}&variables={var_query}&extension={extension_query}"
+        # formatting
+        var_query = quote(json.dumps(variables, separators=(',', ':')))
+        extension_query = quote(json.dumps(extensions, separators=(',', ':')))
+
+        api_endpoint = f"https://samizdat-graphql.nytimes.com/graphql/v2?operationName={operation_name}&variables={var_query}&extensions={extension_query}"
 
         return api_endpoint
 
@@ -344,30 +368,48 @@ class NYTimesSpider(scrapy.Spider):
         self.logger.info(f"Processing page, got {len(articles)} artcicles.")
 
         for article in articles:
-            yield {
-                "headline": article["node"]["headline"][
+            article_data = article["node"]
+            result = {
+                "headline": article_data["headline"][
                     "default"
                 ],  # Need to get text which is in default="headline"
-                "summary": article["node"]["summary"],
-                "url": article["node"]["url"],
-                "News Source": article["node"]["_typename"],
+                "summary": article_data["summary"],
+                "Published Date": article_data["firstPublished"],
+                "url": article_data["url"],
+                "News Source": article_data["__typename"],
             }
+            print(result)
+            yield result
 
         # Now we need to parse through the pages
         # The end paramater will be the new start parameter
         start_cursor = collection["stream"]["pageInfo"]["endCursor"]
         current_page = getattr(response.meta, "page", 1)
 
+        print(f"Current page: {current_page}")
+        print(f"Pages to parse: {self.pages_to_parse}")
+        print(f"Start cursor: {start_cursor}")
+
+
         if start_cursor and current_page < self.pages_to_parse:
             self.logger.info("Cursor found for next page, starting new request.")
-            next_endpoint = self._request_generator(cursor=start_cursor)
+            print("Starting new page")
             time.sleep(2)
-            yield scrapy.Request(
-                url=next_endpoint,
-                headers=self.session.headers,
-                callback=self.parse,
-                meta={"page": current_page + 1},
-            )
+            try:
+                print(f"URL missing? {data['data']['legacyCollection']['url']}")
+                next_endpoint = self._request_generator(data['data']['legacyCollection']['url'])
+
+                time.sleep(2)
+                yield scrapy.Request(
+                    url=next_endpoint,
+                    headers=self.session.headers,
+                    callback=self.parse,
+                    meta={"page": current_page + 1}
+                )
+            except Exception as e:
+                self.logger.error(f"Error loading next endpoint: {e}")
+
+
 
     def _check_api_connection(self, url):
         try:
@@ -423,3 +465,45 @@ class SpiderMetrics:
                 "timestamp": list(self.timestamps),
             }
         )
+
+
+
+#Running the file:
+def test_components():
+    spider = NYTimesSpider(pages_to_parse=2)
+    
+    # Test token extraction
+    print("Getting tokens...")
+    spider.header_update()
+    
+    # Test endpoint generation
+    url = spider.start_urls[0]
+    endpoint = spider._request_generator(url)
+    print(f"Generated endpoint: {endpoint}")
+    
+    # Test API connection
+    connection_ok = spider._check_api_connection(endpoint)
+    print(f"API connection: {connection_ok}")
+    
+    # Test direct API call (bypassing Scrapy)
+    if connection_ok:
+        response = spider.session.get(endpoint)
+        if response.status_code == 200:
+            # Create a mock response object for testing
+            class MockResponse:
+                def __init__(self, json_data):
+                    self._json = json_data
+                    self.meta = type('obj', (object,), {'page': 1})()
+                
+                def json(self):
+                    return self._json
+            
+            mock_response = MockResponse(response.json())
+            
+            # Test the parse method
+            print("Testing parse method...")
+            results = list(spider.parse(mock_response))
+            print(f"Parsed {len(results)} articles")
+
+if __name__ == "__main__":
+    test_components()
