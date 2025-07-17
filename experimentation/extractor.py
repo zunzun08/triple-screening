@@ -79,7 +79,13 @@ class NYTimesSpider(scrapy.Spider):
 
         self.config = NetworkManager()
         self.session: requests.Session = self.config.create_session()
+
         self.pages_to_parse = pages_to_parse
+        self.pages_left_to_parse = pages_to_parse
+
+        self.fetched_articles = []
+        self.all_parsed_data = defaultdict(list)
+
         self.headers = self.config.headers.copy()
         self.session_needs_rotation = False
         self.rotation_reason = None
@@ -107,6 +113,26 @@ class NYTimesSpider(scrapy.Spider):
     allowed_domains = ["https://www.nytimes.com"]
     start_urls = ["https://www.nytimes.com/section/business/media"]
 
+    def _try_standard_session(self):
+        return self.session.get("https://www.nytimes.com")
+
+    def _try_tls_session(self):
+        tls_client = self.config.tls_client_session()
+        response = tls_client.get("https://www.nytimes.com")
+        return self._normalize_response(response)
+
+    def _normalize_response(self, response):
+        """Normalize response objects from different client types"""
+
+        if hasattr(response, "status_code"):
+            return response
+        elif hasattr(response, "status"):
+            response.status_code = response.status
+            return response
+        else:
+            raise ValueError("Unknown response type")
+
+    # Updating headers
     def _get_tokens(self) -> None:
         strategies = [
             ("standard_session", self._try_standard_session),
@@ -133,25 +159,6 @@ class NYTimesSpider(scrapy.Spider):
 
         return None
 
-    def _try_standard_session(self):
-        return self.session.get("https://www.nytimes.com")
-
-    def _normalize_response(self, response):
-        """Normalize response objects from different client types"""
-
-        if hasattr(response, "status_code"):
-            return response
-        elif hasattr(response, "status"):
-            response.status_code = response.status
-            return response
-        else:
-            raise ValueError("Unknown response type")
-
-    def _try_tls_session(self):
-        tls_client = self.config.tls_client_session()
-        response = tls_client.get("https://www.nytimes.com")
-        return self._normalize_response(response)
-
     def _extract_tokens(self, response):
         # variables needed
 
@@ -176,6 +183,17 @@ class NYTimesSpider(scrapy.Spider):
 
         return vars_dict
 
+    def _header_update(self):
+        header_extension = self._get_tokens()
+        if header_extension:
+            self.headers.update(header_extension)
+
+            # Update session headers
+            self.session.headers.update(self.headers)
+        else:
+            return None
+
+    # Connection and 403 handling
     def _is_valid_response(self, response):
         if 200 <= response.status_code < 300:
             return True
@@ -283,53 +301,30 @@ class NYTimesSpider(scrapy.Spider):
         self.rotation_reason = reason
         self.logger.warning(f"Session marked for rotation: {reason}")
 
-    # Update headers dynamically
-    def header_update(self):
-        header_extension = self._get_tokens()
-        if header_extension:
-            self.headers.update(header_extension)
-
-            # Update session headers
-            self.session.headers.update(self.headers)
-        else:
-            return None
-
-    # Scrapy config
-    def start_requests(self):
-        endpoint = self._request_generator()
-        if self._check_api_connection(endpoint):
-            yield scrapy.Request(
-                url=endpoint, headers=self.session.headers, callback=self.parse, meta={"page":1}
-            )
-        else:
-            self.logger.info("API Connection Error")
-
-
+    # Request and API validation
     def _get_id_var(self, url: str):
         """Extract the path from a URL to use as the ID variable."""
         if not url:
             raise ValueError("URL cannot be empty")
-        
+
         try:
             id_path = urlparse(url).path
-            if not id_path or id_path == '/':
+            if not id_path or id_path == "/":
                 raise ValueError("URL must contain a valid path")
             return id_path
         except Exception as e:
             raise ValueError(f"Invalid URL format: {e}")
 
-
-
-    
     def _request_generator(
-        self, url: str ,cursor=None, operation_name: str = "CollectionsQuery") -> str:
+        self, url: str, cursor=None, operation_name: str = "CollectionsQuery"
+    ) -> str:
         """Generate API endpoint URL for GraphQL requests."""
         if url:
             id_path = self._get_id_var(url)
         else:
             self.logger.info("Invalid URL!")
             return None
-        
+
         variables = {
             "id": id_path,
             "first": 10,
@@ -349,71 +344,17 @@ class NYTimesSpider(scrapy.Spider):
             }
         }
 
-
         # formatting
-        var_query = quote(json.dumps(variables, separators=(',', ':')))
-        extension_query = quote(json.dumps(extensions, separators=(',', ':')))
+        var_query = quote(json.dumps(variables, separators=(",", ":")))
+        extension_query = quote(json.dumps(extensions, separators=(",", ":")))
 
         api_endpoint = f"https://samizdat-graphql.nytimes.com/graphql/v2?operationName={operation_name}&variables={var_query}&extensions={extension_query}"
 
         return api_endpoint
 
-    def parse(self, response):
-
-        data = response.json()
-
-        collection = data["data"]["legacyCollection"]["collectionsPage"]
-        articles = collection["stream"]["edges"]
-
-        self.logger.info(f"Processing page, got {len(articles)} artcicles.")
-
-        for article in articles:
-            article_data = article["node"]
-            result = {
-                "headline": article_data["headline"][
-                    "default"
-                ],  # Need to get text which is in default="headline"
-                "summary": article_data["summary"],
-                "Published Date": article_data["firstPublished"],
-                "url": article_data["url"],
-                "News Source": article_data["__typename"],
-            }
-            print(result)
-            yield result
-
-        # Now we need to parse through the pages
-        # The end paramater will be the new start parameter
-        start_cursor = collection["stream"]["pageInfo"]["endCursor"]
-        current_page = getattr(response.meta, "page", 1)
-
-        print(f"Current page: {current_page}")
-        print(f"Pages to parse: {self.pages_to_parse}")
-        print(f"Start cursor: {start_cursor}")
-
-
-        if start_cursor and current_page < self.pages_to_parse:
-            self.logger.info("Cursor found for next page, starting new request.")
-            print("Starting new page")
-            time.sleep(2)
-            try:
-                print(f"URL missing? {data['data']['legacyCollection']['url']}")
-                next_endpoint = self._request_generator(data['data']['legacyCollection']['url'])
-
-                time.sleep(2)
-                yield scrapy.Request(
-                    url=next_endpoint,
-                    headers=self.session.headers,
-                    callback=self.parse,
-                    meta={"page": current_page + 1}
-                )
-            except Exception as e:
-                self.logger.error(f"Error loading next endpoint: {e}")
-
-
-
-    def _check_api_connection(self, url):
+    def _check_api_connection(self, endpoint):
         try:
-            r = self.session.get(url)
+            r = self.session.get(endpoint)
             request_time = r.elapsed.total_seconds()
 
             if 200 <= r.status_code < 300:
@@ -427,6 +368,93 @@ class NYTimesSpider(scrapy.Spider):
         except requests.exceptions.RequestException:
             self.logger.error("API Conncection Dead!")
             return None
+
+    # Scrapy config
+    def start_requests(self):
+
+        endpoint = self._request_generator(self.start_urls[0])
+
+        if self._check_api_connection(endpoint):
+            yield scrapy.Request(
+                url=endpoint,
+                headers=self.session.headers,
+                callback=self.parse,
+                meta={"page": 1, "section_url": self.start_urls[0]},
+            )
+        else:
+            self.logger.info("API Connection Error")
+
+    def parser(self, response):
+        """Main parser method"""
+        try:
+            data = response.json()
+            page_num = response.meta.get("page", 1)
+            section_url = response.meta.get("section_url")
+
+            # Now we need to parse through the pages
+            # The end paramater will be the new start parameter
+            article_data, next_cursor = self._extract_article_data(data)
+
+            page_key = f"Page {page_num}"
+
+            self.all_parsed_data[page_key] = article_data
+            self.fetched_articles.append(len(article_data))
+
+            for article in article_data:
+                print(article)
+                yield article
+
+            self.pages_left_to_parse -= 1
+
+            if (
+                next_cursor
+                and self.pages_left_to_parse > 0
+                and page_num < self.pages_to_parse
+            ):
+                self.logger.info("Cursor found for next page, starting new request.")
+                print("Starting new page")
+                next_endpoint = self._request_generator(section_url, next_cursor)
+
+                if next_endpoint:
+
+                    time.sleep(2)
+                    yield scrapy.Request(
+                        url=next_endpoint,
+                        headers=self.headers,
+                        callback=self.parse,
+                        meta={"page": page_num + 1, "section_url": section_url},
+                        dont_filter=True,
+                    )
+            else:
+                print(self.all_parsed_data)
+                self.logger.info("Pagination complete")
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse JSON response: {e}")
+        except Exception as e:
+            self.logger.error(f"Error in parse method: {e}")
+
+    def _extract_article_data(self, data):
+        collection = data["data"]["legacyCollection"]["collectionsPage"]
+        articles = collection["stream"]["edges"]
+        self.logger.info(f"Processing page, got {len(articles)} artcicles.")
+
+        results = []
+        for article in articles:
+            article_data = article["node"]
+            extracted_data = {
+                "headline": article_data["headline"][
+                    "default"
+                ],  # Need to get text which is in default="headline"
+                "summary": article_data["summary"],
+                "Published Date": article_data["firstPublished"],
+                "url": article_data["url"],
+                "News Source": article_data["__typename"],
+            }
+            results.append(extracted_data)
+
+        next_cursor = collection["stream"]["pageInfo"]["endCursor"]
+
+        return results, next_cursor
 
 
 class SpiderMetrics:
@@ -467,24 +495,23 @@ class SpiderMetrics:
         )
 
 
-
-#Running the file:
+# Running the file:
 def test_components():
     spider = NYTimesSpider(pages_to_parse=2)
-    
+
     # Test token extraction
     print("Getting tokens...")
     spider.header_update()
-    
+
     # Test endpoint generation
     url = spider.start_urls[0]
     endpoint = spider._request_generator(url)
     print(f"Generated endpoint: {endpoint}")
-    
+
     # Test API connection
     connection_ok = spider._check_api_connection(endpoint)
     print(f"API connection: {connection_ok}")
-    
+
     # Test direct API call (bypassing Scrapy)
     if connection_ok:
         response = spider.session.get(endpoint)
@@ -493,17 +520,18 @@ def test_components():
             class MockResponse:
                 def __init__(self, json_data):
                     self._json = json_data
-                    self.meta = type('obj', (object,), {'page': 1})()
-                
+                    self.meta = type("obj", (object,), {"page": 1})()
+
                 def json(self):
                     return self._json
-            
+
             mock_response = MockResponse(response.json())
-            
+
             # Test the parse method
             print("Testing parse method...")
             results = list(spider.parse(mock_response))
             print(f"Parsed {len(results)} articles")
+
 
 if __name__ == "__main__":
     test_components()
