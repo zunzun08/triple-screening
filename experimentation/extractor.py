@@ -370,23 +370,28 @@ class NYTimesSpider(scrapy.Spider):
             return None
 
     # Scrapy config
-    def start_requests(self):
+    def _get_response(self):
 
         endpoint = self._request_generator(self.start_urls[0])
 
         if self._check_api_connection(endpoint):
             yield scrapy.Request(
                 url=endpoint,
-                headers=self.session.headers,
+                headers={**self.session.headers, 
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+                },
                 callback=self.parse,
                 meta={"page": 1, "section_url": self.start_urls[0]},
             )
         else:
             self.logger.info("API Connection Error")
+
+
     def parse(self, response):
         """Main parser method"""
         try:
-            data = response.json()
+            data = json.loads(response.text)
             page_num = response.meta.get("page", 1)
             section_url = response.meta.get("section_url")
 
@@ -514,7 +519,7 @@ def test_components():
 
     # Test direct API call (bypassing Scrapy)
     if connection_ok:
-        response = spider.session.get(endpoint)
+        response = spider.start_requests()
         data = spider.parse(response)
 
         for item in data:
