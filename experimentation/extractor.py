@@ -74,14 +74,19 @@ class NetworkManager:
 
 
 class NYTimesSpider(scrapy.Spider):
-    def __init__(self, pages_to_parse, *args, **kwargs):
+    def __init__(self, pages_to_parse, section_url,*args, **kwargs):
         super().__init__(*args, **kwargs)
 
         self.config = NetworkManager()
         self.session: requests.Session = self.config.create_session()
 
+        self.section_url = section_url
+        self.start_urls = [self.section_url]
+
+
         self.pages_to_parse = pages_to_parse
         self.pages_left_to_parse = pages_to_parse
+        self.pages_parsed = 0
 
         self.fetched_articles = []
         self.all_parsed_data = defaultdict(list)
@@ -368,75 +373,75 @@ class NYTimesSpider(scrapy.Spider):
         except requests.exceptions.RequestException:
             self.logger.error("API Conncection Dead!")
             return None
+        
+    def start_scraping(self):
+
+        initial_endpoint= self._request_generator(self.section_url, cursor=None)
+        if initial_endpoint:
+            initial_response = self._get_response(initial_endpoint)
+            if initial_response:
+                self.parse(initial_response)
+        else:
+            self.logger.error("Failed to generate initial endpoint")
+            return None
+        return self.all_parsed_data
+
 
     # Scrapy config
-    def _get_response(self):
-
-        endpoint = self._request_generator(self.start_urls[0])
-
+    def _get_response(self, endpoint):
         if self._check_api_connection(endpoint):
-            yield scrapy.Request(
-                url=endpoint,
-                headers={**self.session.headers, 
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-                },
-                callback=self.parse,
-                meta={"page": 1, "section_url": self.start_urls[0]},
-            )
-        else:
-            self.logger.info("API Connection Error")
+            response = self.session.get(endpoint)
+            return response
 
 
     def parse(self, response):
         """Main parser method"""
         try:
-            data = json.loads(response.text)
-            page_num = response.meta.get("page", 1)
-            section_url = response.meta.get("section_url")
+            data = response.json()
 
             # Now we need to parse through the pages
             # The end paramater will be the new start parameter
             article_data, next_cursor = self._extract_article_data(data)
 
-            page_key = f"Page {page_num}"
-
+            page_key = f"Page {self.pages_parsed}"
+            self.pages_parsed += 1
             self.all_parsed_data[page_key] = article_data
             self.fetched_articles.append(len(article_data))
-
-            for article in article_data:
-                print(article)
-                yield article
-
             self.pages_left_to_parse -= 1
+
 
             if (
                 next_cursor
                 and self.pages_left_to_parse > 0
-                and page_num < self.pages_to_parse
+                and self.pages_parsed < self.pages_to_parse
             ):
                 self.logger.info("Cursor found for next page, starting new request.")
                 print("Starting new page")
-                next_endpoint = self._request_generator(section_url, next_cursor)
+                next_endpoint = self._request_generator(self.section_url, next_cursor)
 
                 if next_endpoint:
-
-                    time.sleep(2)
-                    yield scrapy.Request(
-                        url=next_endpoint,
-                        headers=self.session.headers,
-                        callback=self.parse,
-                        meta={"page": page_num + 1, "section_url": section_url},
-                        dont_filter=True,
-                    )
+                    next_response = self._get_response(next_endpoint)
+                    if next_response:
+                        time.sleep(2)
+                        self.parse(next_response)
+                    else:
+                        self.logger.error("Failed to get response for next page.")
+                else:
+                    self.logger.error("Failed to generate next endpoint.")
             else:
                 print(self.all_parsed_data)
                 self.logger.info("Pagination complete")
+
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse JSON response: {e}")
         except Exception as e:
             self.logger.error(f"Error in parse method: {e}")
+
         return self.all_parsed_data
+
+
+
+
 
     def _extract_article_data(self, data):
         collection = data["data"]["legacyCollection"]["collectionsPage"]
@@ -502,7 +507,9 @@ class SpiderMetrics:
 
 # Running the file:
 def test_components():
-    spider = NYTimesSpider(pages_to_parse=2)
+    business_url = "https://www.nytimes.com/section/business"
+
+    spider = NYTimesSpider(pages_to_parse=3, section_url=business_url)
 
     # Test token extraction
     print("Getting tokens...")
@@ -519,13 +526,13 @@ def test_components():
 
     # Test direct API call (bypassing Scrapy)
     if connection_ok:
-        response = spider.start_requests()
-        data = spider.parse(response)
+        results = spider.start_scraping()
 
-        for item in data:
-            print(item)
-            # Test the parse metho
-
+    if results:
+        total_articles = sum(len(articles) for articles in results.values())
+        print(f"Succesfully scraped {len(total_articles)} articles from {len(results)} pages")
+    else:
+        print("scraping failed")
 
 if __name__ == "__main__":
     test_components()
