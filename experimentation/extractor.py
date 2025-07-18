@@ -504,6 +504,28 @@ class SpiderMetrics:
             }
         )
 
+class SpiderBehavior:
+
+
+    ###Spiders need to crawl randomly to not get caught by anti-bot measures###
+
+
+    def __init__(self, placeholder):
+            self.placeholder = placeholder
+
+
+
+    def sleep_time(self):
+
+     """Give the spiders random behavior when calling requests."""
+        
+        rate = 5
+        beta = 3.5
+        sleep_time = rate * np.random.weibull(3.5, size=1) + np.random.normal()
+        return sleep_time
+
+
+
 
 # Running the file:
 def test_components():
