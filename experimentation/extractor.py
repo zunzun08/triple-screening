@@ -375,7 +375,6 @@ class NYTimesSpider(scrapy.Spider):
             return None
         
     def start_scraping(self):
-
         initial_endpoint= self._request_generator(self.section_url, cursor=None)
         if initial_endpoint:
             initial_response = self._get_response(initial_endpoint)
@@ -555,6 +554,8 @@ def test_components():
         print(f"Succesfully scraped {len(total_articles)} articles from {len(results)} pages")
     else:
         print("scraping failed")
+
+
 
 if __name__ == "__main__":
     test_components()
