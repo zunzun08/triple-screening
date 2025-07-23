@@ -5,6 +5,8 @@ from datetime import datetime
 from urllib.parse import quote, urlparse
 import time
 import json
+import websocket
+import threading
 import tls_client
 import scrapy
 import re
@@ -67,41 +69,8 @@ class NetworkManager:
         client.headers.update(self.headers)
         return client
 
-class BaseWebScraper(ABC):
-    def __init__(self):
-        self.network_manager = NetworkManager()
-        self.session = self.network_manager.create_session()
-        
-        self.all_parsed_data = defaultdict(list)
-        
-        self.headers = self.config.headers.copy()
-        self.session_needs_rotation = False
-        self.rotation_reason = None
-        
-        self.current_session_metrics = {
-                "start_time": datetime.now(),
-                "requests_made": 0,
-                "avg_response_time": 0,
-                "success_rate": 0,
-            }
-        self.site_metrics = {
-                "total_requests": 0,
-                "historical_avg_response": 0,
-                "successful_sessions": 0,
-                "failed_sessions": 0,
-            }
-        self.session_transitions = {
-                "reasons_for_change": [],
-                "time_between_changes": [],
-                "success_after_change": [],
-            }
-        
-    # # # # # # # # # # # # # # # # # # # # #
-    #                                       #
-    #       Universal Failsafe methods      #
-    #                                       #
-    # # # # # # # # # # # # # # # # # # # # #
-    
+class FailSafeManager:
+
     def _403_failsafe(self, response):
         """Strategies to overcome 403 error"""
         if self._try_enhanced_headers():
@@ -141,7 +110,6 @@ class BaseWebScraper(ABC):
         self.logger.info(f"Added enhanced errors for 403 recovery")
         return True
     
-
     def _try_rotate_user_agent(self):
         alternate_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -155,8 +123,7 @@ class BaseWebScraper(ABC):
                 self.logger.info(f"Rotated to agent: {agent}")
                 return True
         return False
-    
-    
+
     def _try_rotate_proxy(self):
         if len(self.proxies) > 1:
             current_proxy = self.session.proxies.get("http")
@@ -170,19 +137,53 @@ class BaseWebScraper(ABC):
         else:
             self.logger.info(f"No more proxies available")
             return False
-   
+        
     def _mark_for_session_rotation(self, reason):
         self.session_needs_rotation = True
         self.rotation_reason = reason
         self.logger.warning(f"Session marked for rotation: {reason}")
 
+ 
+
+
+class BaseWebScraper(ABC):
+    def __init__(self):
+        self.network_manager = NetworkManager()
+        self.failsafe_manager = FailSafeManager()
+        self.session = self.network_manager.create_session()
+        
+        self.all_parsed_data = defaultdict(list)
+        
+        self.headers = self.config.headers.copy()
+        self.session_needs_rotation = False
+        self.rotation_reason = None
+        
+        self.current_session_metrics = {
+                "start_time": datetime.now(),
+                "requests_made": 0,
+                "avg_response_time": 0,
+                "success_rate": 0,
+            }
+        self.site_metrics = {
+                "total_requests": 0,
+                "historical_avg_response": 0,
+                "successful_sessions": 0,
+                "failed_sessions": 0,
+            }
+        self.session_transitions = {
+                "reasons_for_change": [],
+                "time_between_changes": [],
+                "success_after_change": [],
+            }
     
     # # # # # # # # # # # # # # # # # # # # #
     #                                       #
     #           Abstract methods            #
     #                                       #
     # # # # # # # # # # # # # # # # # # # # #
-    
+    @abstractmethod
+    def enhanced_headers(self):
+        pass
   
 
     @abstractmethod
@@ -190,9 +191,8 @@ class BaseWebScraper(ABC):
         pass    
 
     @abstractmethod
-    def _request_generator(
-        self, url: str,
-    )
+    def _request_generator(self, url: str):
+        pass
     
     @abstractmethod
     def parse(self, response):
@@ -443,86 +443,104 @@ class NYTimesSpider(BaseWebScraper, scrapy.Spider):
 
         return results, next_cursor
 
+
 class WSJSpider(BaseWebScraper, scrapy.Spider):
-    name = "wsjspider"
-    allowed_domains = ["https://www.wsj.com"]
-    start_urls = ["https://www.wsj.com/business"]
-
-    def _try_standard_session(self):
-        return self.session.get("https://www.wsj.com")
-
-    def _try_tls_session(self):
-        tls_client = self.config.tls_client_session()
-        response = tls_client.get("https://www.wsj.com")
-        return self._normalize_response(response)
+    def __init__(self, pages_to_parse):
+        super().__init__()
+        self.endpoint = "https://shared-data.dowjones.io/gateway/graphql"
+        self.pages_to_parse = pages_to_parse
     
-    def parse(self, response):
-        """Main parser method"""
-        try:
-            data = response.json()
+    def _request_generator(self, url):       
+        def on_message(ws, message):
+            print(f"websocket Message: {message}")
+            try:
+                parsed = json.loads(message)
+                print(f"Parsed: {json.dumps(parsed, indent=2)}")
+            except:
+                pass
+        
+        def on_error(ws, error):
+            print(f"Websocket Error: {error}") 
 
-            # Now we need to parse through the pages
-            # The end paramater will be the new start parameter
-            article_data, next_cursor = self._extract_article_data(data)
+        def on_close(ws, close_status_code, close_msg):
+            print("WebSocket connection closed")
+        
+        def on_open(ws):
+            print("Websocket connection opened")
 
-            page_key = f"Page {self.pages_parsed}"
-            self.pages_parsed += 1
-            self.all_parsed_data[page_key] = article_data
-            self.fetched_articles.append(len(article_data))
-            self.pages_left_to_parse -= 1
-
-
-            if (
-                next_cursor
-                and self.pages_left_to_parse > 0
-                and self.pages_parsed < self.pages_to_parse
-            ):
-                self.logger.info("Cursor found for next page, starting new request.")
-                print("Starting new page")
-                next_endpoint = self._request_generator(self.section_url, next_cursor)
-
-                if next_endpoint:
-                    next_response = self._get_response(next_endpoint)
-                    if next_response:
-                        sleep_time = self.behavior.sleep_time()
-                        time.sleep(sleep_time)
-                        self.parse(next_response)
-                    else:
-                        self.logger.error("Failed to get response for next page.")
-                else:
-                    self.logger.error("Failed to generate next endpoint.")
-            else:
-                print(self.all_parsed_data)
-                self.logger.info("Pagination complete")
-
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse JSON response: {e}")
-        except Exception as e:
-            self.logger.error(f"Error in parse method: {e}")
-
-        return self.all_parsed_data
-
-
-
-    def _extract_article_data(self, data):
-        collection = data["data"]["legacyCollection"]["collectionsPage"]
-        articles = collection["stream"]["edges"]
-        self.logger.info(f"Processing page, got {len(articles)} artcicles.")
-
-        results = []
-        for article in articles:
-            article_data = article["node"]
-            extracted_data = {
-                "headline": article_data["headline"][
-                    "default"
-                ],  # Need to get text which is in default="headline"
-                "summary": article_data["summary"],
-                "Published Date": article_data["firstPublished"],
-                "url": article_data["url"],
-                "News Source": article_data["__typename"],
+            init_message = {
+                "type": "connection_init",
+                "payload": {}
             }
-            results.append(extracted_data)
+            ws.send(json.dumps(init_message))
+        
+        try:
+            ws = websocket.WebSocketApp(
+                 url=url,
+                 on_message=on_message,
+                 on_error=on_error,
+                 on_close=on_close,
+                 on_open=on_open
+            )
+            ws_thread = threading.Thread(target=ws.run_forever)
+            ws_thread.daemon = True
+            ws_thread.start()
+        except Exception as e:
+            print(f"Websocket connection failed: {e}")
+            return None, None
+    
+    def get_response(self, endpoint):
 
-        next_cursor = collection["stream"]["pageInfo"]["endCursor"]
+        test_query = {
+            "query": """
+            query ArticlesByContentType($searchQuery: SearchQuery!, $contentType: [SearchContentType], $page: Int) {
+              articlesByContentType(searchQuery: $searchQuery, contentType: $contentType, page: $page) {
+                headline {
+                  text
+                }
+                publishedDateTimeUtc
+                seoPath {
+                  value
+                }
+              }
+            }
+            """,
+            "variables": {
+                "contentType": ["ARTICLE"],
+                "page": 1,
+                "searchQuery": {
+                    "and": [
+                        {
+                            "terms": {
+                                "key": "Product",
+                                "value": ["WSJ.com"]
+                            }
+                        }
+                    ],
+                    "sort": [
+                        {
+                            "key": "LiveDate",
+                            "order": "desc"
+                        }
+                    ]
+                }
+            }
+        }
+   
 
-        return results, next_cursor
+        try:
+            response = self.session.post(
+                self.endpoint,
+
+            )
+            print(f"POST response status: {response.status_code}")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"Error response: {response.text}")
+                return None
+        except Exception as e:
+            print(f"POST request failed: {e}")
+            return None
+
+                
