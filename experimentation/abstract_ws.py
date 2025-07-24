@@ -182,7 +182,7 @@ class BaseWebScraper(ABC):
     #                                       #
     # # # # # # # # # # # # # # # # # # # # #
     @abstractmethod
-    def enhanced_headers(self):
+    def _auth_header_update(self):
         pass
   
 
@@ -280,7 +280,7 @@ class NYTimesSpider(BaseWebScraper, scrapy.Spider):
 
         return vars_dict
     
-    def _header_update(self):
+    def _auth_header_update(self):
         header_extension = self._get_tokens()
         if header_extension:
             self.headers.update(header_extension)
@@ -450,6 +450,30 @@ class WSJSpider(BaseWebScraper, scrapy.Spider):
         self.endpoint = "https://shared-data.dowjones.io/gateway/graphql"
         self.pages_to_parse = pages_to_parse
     
+    def _extract_tokens(self, browser_headers):
+
+        auth_headers = {}
+
+        auth_patterns = [
+            'authorization',
+            'x-api-key',
+            'x-auth-token',
+            'cookie',
+            'x-csrf-token'
+        ]
+
+        for pattern in auth_patterns:
+            for key, value in browser_headers.items():
+                if pattern in key.lower():
+                    auth_headers[key] = value
+
+        return auth_headers
+
+    def _auth_header_update(self):
+        auth_headers = self._extract_tokens()
+
+
+    
     def _request_generator(self, url):       
         def on_message(ws, message):
             print(f"websocket Message: {message}")
@@ -542,5 +566,8 @@ class WSJSpider(BaseWebScraper, scrapy.Spider):
         except Exception as e:
             print(f"POST request failed: {e}")
             return None
+    
+    def extract_article_data(self, data):
+        
 
                 
