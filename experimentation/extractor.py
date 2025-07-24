@@ -1,6 +1,7 @@
 import scrapy
 import requests
 import asyncio
+import logging
 from scrapy.crawler import Crawler
 import json
 from urllib.parse import quote, urlparse
@@ -22,6 +23,7 @@ class NetworkManager:
         }
 
         self.proxies = {"http": "108.161.135.118"}
+        self.logger = logging.getLogger(__name__)
 
     def create_session(self) -> requests.Session:
         if not self.proxies:
@@ -71,17 +73,184 @@ class NetworkManager:
         )
         client.headers.update(self.headers)
         return client
+    
+    def _try_standard_session(self, home_url: str):
+        client = requests.Session()
+        client.headers.update(self.headers)
 
 
+        response = client.get(home_url)
+
+        if 200 <= response.status_code < 300:
+            return client
+        elif 400 <= response.status_code < 500:
+            self.logger.info("Client session retuned unauthorized request. Trying TLS client.")
+            self._try_tls_session(home_url)
+        else:
+            print(f"Status code: {response.status_code}. Proceed with caution.")
+            return client
+    
+    def _try_tls_session(self, home_url: str):
+        tls_client = self.tls_client_session()
+        response = tls_client.get(home_url)
+        if 200 <= self._normalize_response(response) < 300:
+            self.logger.info("TLS client activated")
+            return tls_client
+        elif 400 <= self._normalize_response(response) < 500:
+            self.logger.info("TLS client failed. Please recheck headers or home url.")
+            return None
+        else:
+            print(f"Status code: {self._normalize_response(response)}. Proceed with caution.")
+            return tls_client
+    
+
+
+    def _normalize_response(self, response):
+        """Normalize response objects from different client types"""
+
+        if hasattr(response, "status_code"):
+            return response
+        elif hasattr(response, "status"):
+            response.status_code = response.status
+            return response
+        else:
+            raise ValueError("Unknown response type")
+
+
+
+
+class FailsafeStrategy:
+
+    def __init__(self, session, proxies):
+        self.session = session
+        self.proxies = proxies
+        self.logger = logging.getLogger(__name__)
+
+
+    def handle_403(self, response, auth_tokens) -> bool:
+        """Try various strategies to overcome 403"""
+        strategies = [
+            self._try_enhanced_headers,
+            self._try_rotate_user_agent,
+            self._try_rotate_proxy,
+            lambda: self.check_soft_block(response, auth_tokens)
+        ]
+
+        for strategy in strategies:
+            if strategy():
+                return True
+        return False
+
+    def _try_enhanced_headers(self):
+        enhanced_headers = {
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://www.nytimes.com/section/business/media",
+            "Origin": "https://www.nytimes.com",
+            "Connection": "keep-alive",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-site",
+            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+        }
+        self.session.headers.update(enhanced_headers)
+        self.logger.info(f"Added enhanced errors for 403 recovery")
+        return True
+    
+    def _try_rotate_user_agent(self):
+        alternate_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        ]
+        current_agent = self.session.headers.get("User-Agent")
+        for agent in alternate_agents:
+            if agent != current_agent:
+                self.session.headers["User-Agent"] = agent
+                self.logger.info(f"Rotated to agent: {agent}")
+                return True
+        return False
+
+
+    def _try_rotate_proxy(self):
+        if len(self.proxies) > 1:
+            current_proxy = self.session.proxies.get("http")
+
+            for proxy in self.proxies["http"]:
+                if proxy != current_proxy:
+                    self.session.proxies["http"] = proxy
+                    self.logger.info(f"Rotated to proxy: {proxy}")
+                    return True
+            return False
+        else:
+            self.logger.info(f"No more proxies available")
+            return False
+
+    def content_validation(self, response):
+        """Good connections return a webpage with content."""
+        if not response.text:
+            return False
+        if "text/html" not in response.headers.get("content-type", ""):
+            return False
+        else:
+            return True
+        
+
+
+
+
+
+class SessionManager:
+    def __init__(self, network_config: NetworkManager):
+        self.config = network_config
+        self.session = None
+        self.failsafe = None
+        
+    def __enter__(self):
+        self.session = self.config.create_session()
+        self.failsafe = FailsafeStrategy(self.session, self.config.proxies, logging)
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            self.session.close()
+            
+    def make_request(self, url: str) -> requests.Response:
+        response = self.session.get(url)
+        if not self._is_valid_response(response):
+            raise requests.RequestException(f"Failed after failsafe: {response.status_code}")
+        return response
+        
+    def _is_valid_response(self, response) -> bool:
+        if 200 <= response.status_code < 300:
+            return True
+        if 400 <= response.status_code < 500 and response.status_code > 300:
+            self.logger.info("Got 403 error - attempting failsafe measure")
+            return self.failsafe.handle_403(response)
+        
+        else:
+            self.logger.error(f"Invalid response: {response.status_code}")
+            return False
+
+ 
 class NYTimesSpider(scrapy.Spider):
     def __init__(self, pages_to_parse, section_url,*args, **kwargs):
         super().__init__(*args, **kwargs)
-
+        self.logger = logging.getLogger(__name__)
         self.config = NetworkManager()
-        self.session: requests.Session = self.config.create_session()
+        self.session = self.config.create_session()
+        self.failsafe = FailsafeStrategy(
+            session=self.session,
+            proxies=self.config.proxies
+        )
 
         self.section_url = section_url
+        self.home_domain = "https://www.nytimes.com"
         self.start_urls = [self.section_url]
+        self.auth_tokens = ["nyt_token", "graphql", "samizdat"]
 
 
         self.pages_to_parse = pages_to_parse
@@ -118,51 +287,15 @@ class NYTimesSpider(scrapy.Spider):
     allowed_domains = ["https://www.nytimes.com"]
     start_urls = ["https://www.nytimes.com/section/business/media"]
 
-    def _try_standard_session(self):
-        return self.session.get("https://www.nytimes.com")
-
-    def _try_tls_session(self):
-        tls_client = self.config.tls_client_session()
-        response = tls_client.get("https://www.nytimes.com")
-        return self._normalize_response(response)
-
-    def _normalize_response(self, response):
-        """Normalize response objects from different client types"""
-
-        if hasattr(response, "status_code"):
-            return response
-        elif hasattr(response, "status"):
-            response.status_code = response.status
-            return response
-        else:
-            raise ValueError("Unknown response type")
-
     # Updating headers
     def _get_tokens(self) -> None:
-        strategies = [
-            ("standard_session", self._try_standard_session),
-            ("tls_session", self._try_tls_session),
-        ]
-
-        for strategy_name, get_response in strategies:
+        with SessionManager(self.config) as session_mgr:
             try:
-                self.logger.info(f"Attempting to get tokens using {strategy_name}")
-                r = get_response()
-
-                if self._is_valid_response(r) and self._content_validation(r):
-                    return self._extract_tokens(r)
-                else:
-                    if getattr(self, "session_needs_rotation", False):
-                        self.logger.info(
-                            f"{strategy_name} failed. Starting TLS session in 3 seconds..."
-                        )
-                        time.sleep(3)
-
-            except requests.exceptions.RequestException as e:
-                self.logger.error(f"{strategy_name} failed: {e}")
-                continue
-
-        return None
+                response = session_mgr.make_request(self.home_domain)
+                return self._extract_tokens(response)
+            except requests.RequestException as e:
+                self.logger.error(f"Failed to get tokens {e}")
+                return None
 
     def _extract_tokens(self, response):
         # variables needed
@@ -197,114 +330,6 @@ class NYTimesSpider(scrapy.Spider):
             self.session.headers.update(self.headers)
         else:
             return None
-
-    # Connection and 403 handling
-    def _is_valid_response(self, response):
-        if 200 <= response.status_code < 300:
-            return True
-        if 400 <= response.status_code < 500 and response.status_code > 300:
-            # Can try alternate headers here
-            self.logger.info("Got 403 error - attempting failsafe measure")
-            return self._403_failsafe(response)
-
-        self.logger.error(f"Invalid response: {response.status_code}")
-        return False
-
-    def _content_validation(self, response):
-        if not response.text:
-            return False
-        if "text/html" not in response.headers.get("content-type", ""):
-            return False
-        else:
-            return True
-
-    def _403_failsafe(self, response):
-        """Strategies to overcome 403 error"""
-        if self._try_enhanced_headers():
-            return True
-        if self._try_rotate_user_agent():
-            return True
-        if self._try_rotate_proxy():
-            return True
-        if self._check_soft_block(response):
-            self.logger.info(
-                "Status code 403 but content available - proceed with caution"
-            )
-            return True
-
-        self._mark_for_session_rotation("403_block")
-        return False
-
-    def _try_enhanced_headers(self):
-        enhanced_headers = {
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://www.nytimes.com/section/business/media",
-            "Origin": "https://www.nytimes.com",
-            "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-site",
-            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-        }
-        self.session.headers.update(enhanced_headers)
-        self.logger.info(f"Added enhanced errors for 403 recovery")
-        return True
-
-    def _try_rotate_user_agent(self):
-        alternate_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-        ]
-        current_agent = self.session.headers.get("User-Agent")
-        for agent in alternate_agents:
-            if agent != current_agent:
-                self.session.headers["User-Agent"] = agent
-                self.logger.info(f"Rotated to agent: {agent}")
-                return True
-        return False
-
-    def _try_rotate_proxy(self):
-        if len(self.proxies) > 1:
-            current_proxy = self.session.proxies.get("http")
-
-            for proxy in self.proxies["http"]:
-                if proxy != current_proxy:
-                    self.session.proxies["http"] = proxy
-                    self.logger.info(f"Rotated to proxy: {proxy}")
-                    return True
-            return False
-        else:
-            self.logger.info(f"No more proxies available")
-            return False
-
-    def _check_soft_block(self, response):
-        if not response.text:
-            return False
-
-        soft_block_indicators = ["nyt_token", "graphql", "samizdat"]
-
-        content_lower = response.text.lower()
-        indicator_search = [
-            indicators
-            for indicators in soft_block_indicators
-            if indicators in response.text
-        ]
-
-        if indicator_search:
-            self.logger.info(f"Soft block detected - found {indicator_search}")
-            return True
-        else:
-            return False
-
-    def _mark_for_session_rotation(self, reason):
-        self.session_needs_rotation = True
-        self.rotation_reason = reason
-        self.logger.warning(f"Session marked for rotation: {reason}")
 
     # Request and API validation
     def _get_id_var(self, url: str):
@@ -375,16 +400,10 @@ class NYTimesSpider(scrapy.Spider):
             return None
         
     def start_scraping(self):
-        initial_endpoint= self._request_generator(self.section_url, cursor=None)
-        if initial_endpoint:
-            initial_response = self._get_response(initial_endpoint)
-            if initial_response:
-                self.parse(initial_response)
-        else:
-            self.logger.error("Failed to generate initial endpoint")
-            return None
-        return self.all_parsed_data
-
+        with SessionManager(self.config, self.auth_tokens) as session_mgr:
+            initial_endpoint = self._request_generator(self.section_url)
+            response = session_mgr.make_request(initial_endpoint)
+            return self.parse(response)
 
     # Scrapy config
     def _get_response(self, endpoint):
@@ -504,24 +523,18 @@ class SpiderMetrics:
         )
 
 class SpiderBehavior:
-
-
     ###Spiders need to crawl randomly to not get caught by anti-bot measures###
-
-
     def __init__(self, placeholder):
-            self.placeholder = placeholder
+        self.placeholder = placeholder
 
 
 
     def sleep_time(self):
-
-     """Give the spiders random behavior when calling requests."""
-        
         rate = 5
         beta = 3.5
         sleep_time = rate * np.random.weibull(3.5, size=1) + np.random.normal()
         return sleep_time
+
 
 
 
